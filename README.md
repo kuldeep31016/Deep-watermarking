@@ -326,4 +326,4 @@ DECODER_MODE=windowed_cnn uvicorn src.app.main:app --port 8000        # serve wi
 pytest                                                 # 437 passed, 2 skipped
 ```
 
-See `docs/windowed_cnn.md`, `docs/phase18_id_registry.md`, and `docs/webapp.md` for deeper write-ups. All metrics in this README trace to `models/experimental/windowed_cnn/metrics.json` or the test suite.
+See `docs/windowed_cnn.md`, `docs/phase18_id_registry.md`, and `docs/webapp.md` for deeper write-ups. All metrics in this README trace to `models/experimental/windowed_cnn/metrics.json` or the test suite.# Deep-watermarking
