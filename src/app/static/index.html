@@ -1286,6 +1286,10 @@
     border-bottom: 1px solid rgba(255, 255, 255, 0.04);
   }
   table.data-table tr:last-child td { border-bottom: none; }
+  table.results-table { border-collapse: collapse; }
+  table.results-table th, table.results-table td { padding: 6px 10px; border-bottom: 1px solid rgba(148,163,184,0.15); text-align: right; font-family: var(--mono); }
+  table.results-table th { color: var(--text-secondary); font-weight: 500; font-family: inherit; }
+  table.results-table td:first-child, table.results-table th:first-child { text-align: left; }
   table.data-table td:first-child { color: var(--text-secondary); }
   table.data-table td:last-child { text-align: right; font-family: var(--mono); color: #fff; }
 
@@ -1446,7 +1450,7 @@
               <span class="text-accent">Always Traceable.</span>
             </h1>
             <p class="hero-desc">
-              Vestigia embeds a cryptographic ownership mark directly into your images using a robust DWT-SVD pipeline. The watermark is invisible, requires no original image to verify, and survives real-world use.
+              Vestigia embeds a UUID-derived ownership mark directly into your images with a DWT-SVD pipeline. The watermark is visually imperceptible (≈45–51 dB PSNR) and is read back by a blind 1D-CNN that never needs the original image. Robustness is measured, not assumed — see the results section.
             </p>
 
             <div class="hero-ctas">
@@ -1501,8 +1505,8 @@
                   </svg>
                 </div>
                 <div class="feature-info">
-                  <span class="feature-label">Robust</span>
-                  <span class="feature-sub">Survives real use</span>
+                  <span class="feature-label">Measured</span>
+                  <span class="feature-sub">Robustness is benchmarked</span>
                 </div>
               </div>
 
@@ -1641,7 +1645,7 @@
           </div>
           <h3>Distribute</h3>
           <p>Share or publish your watermarked image. It looks identical to the naked eye, but carries your ownership mark.</p>
-          <span class="step-pill-tag purple">REAL-WORLD ROBUSTNESS</span>
+          <span class="step-pill-tag purple">MEASURED ROBUSTNESS</span>
         </div>
 
         <div class="step-connector">→</div>
@@ -1730,9 +1734,9 @@
       <div class="results-section">
         <div class="section-header">
           <div>
-            <span class="section-eyebrow">— VALIDATION BENCHMARKS</span>
+            <span class="section-eyebrow">— MEASURED RESULTS</span>
             <h2 class="section-title">Key Results (Windowed CNN Decoder)</h2>
-            <p class="section-sub">Measured on held-out DIV2K validation and test sets using frozen checkpoints.</p>
+            <p class="section-sub" id="results-sub">Loading measured results from <code>/api/results</code> …</p>
           </div>
           <button type="button" class="section-action-btn" onclick="openAboutModal()">
             <span>View full details</span>
@@ -1740,31 +1744,25 @@
           </button>
         </div>
 
-        <div class="results-grid">
-          <div class="result-stat-card">
-            <div class="result-stat-val">77.78%</div>
-            <div class="result-stat-label">Test bit accuracy</div>
-          </div>
-          <div class="result-stat-card">
-            <div class="result-stat-val">22.22%</div>
-            <div class="result-stat-label">Bit error rate (BER)</div>
-          </div>
-          <div class="result-stat-card">
-            <div class="result-stat-val">77.41%</div>
-            <div class="result-stat-label">Precision</div>
-          </div>
-          <div class="result-stat-card">
-            <div class="result-stat-val">74.37%</div>
-            <div class="result-stat-label">Recall</div>
-          </div>
-          <div class="result-stat-card">
-            <div class="result-stat-val">75.86%</div>
-            <div class="result-stat-label">F1 score</div>
-          </div>
-          <div class="result-stat-card">
-            <div class="result-stat-val">96/100</div>
-            <div class="result-stat-label">Registry IDs recovered</div>
-          </div>
+        <div class="results-grid" id="results-grid">
+          <div class="result-stat-card"><div class="result-stat-val" id="rs-acc">–</div><div class="result-stat-label">Test bit accuracy</div></div>
+          <div class="result-stat-card"><div class="result-stat-val" id="rs-ber">–</div><div class="result-stat-label">Bit error rate (BER)</div></div>
+          <div class="result-stat-card"><div class="result-stat-val" id="rs-prec">–</div><div class="result-stat-label">Precision</div></div>
+          <div class="result-stat-card"><div class="result-stat-val" id="rs-rec">–</div><div class="result-stat-label">Recall</div></div>
+          <div class="result-stat-card"><div class="result-stat-val" id="rs-f1">–</div><div class="result-stat-label">F1 score</div></div>
+          <div class="result-stat-card"><div class="result-stat-val" id="rs-exact">–</div><div class="result-stat-label">Registry IDs recovered</div></div>
+        </div>
+        <div id="results-tables" style="margin-top:22px; overflow-x:auto;">
+          <p class="section-sub" id="matrix-note">Experiment matrix: not run yet (<code>python scripts/run_experiments.py</code>).</p>
+          <table class="results-table" id="matrix-table" style="display:none; width:100%; font-size:13px;">
+            <thead><tr><th>Bits</th><th>α</th><th>PSNR (dB)</th><th>SSIM</th><th>Non-blind acc</th><th>Blind acc</th><th>Blind decoder</th></tr></thead>
+            <tbody></tbody>
+          </table>
+          <p class="section-sub" id="robust-note" style="margin-top:14px;">Robustness: not run yet.</p>
+          <table class="results-table" id="robust-table" style="display:none; width:100%; font-size:13px;">
+            <thead><tr><th>Attack</th><th>Severity</th><th>PSNR after attack</th><th>Blind BER</th><th>Non-blind BER</th></tr></thead>
+            <tbody></tbody>
+          </table>
         </div>
       </div>
     </div>
@@ -1790,7 +1788,7 @@
             </div>
             <div>
               <h4>Content Ownership</h4>
-              <p>Prove and protect your creative work with non-destructible embedded provenance tags.</p>
+              <p>Attach a provenance tag to your creative work that survives lossless sharing and light JPEG re-compression (measured in the results section).</p>
             </div>
           </div>
 
@@ -2228,6 +2226,52 @@ async function boot(){
     $('#spec-decoder').innerHTML = (wmOn ? 'windowed_cnn*' : decName);
     $('#ft-decoder').textContent = INFO.decoder_mode;
     st.textContent += ' · ' + INFO.decoder_mode;
+  }
+  loadResults();
+}
+
+/* ---------- Measured results (read from result files via /api/results) ---------- */
+function pct(x){ return (x === null || x === undefined) ? '–' : (100 * x).toFixed(2) + '%'; }
+async function loadResults(){
+  let R = null;
+  try { R = await (await fetch('/api/results')).json(); } catch { R = null; }
+  const sub = $('#results-sub');
+  if (!R || !R.decoder){
+    sub.textContent = 'No decoder metrics found - train a decoder first (python scripts/train.py).';
+    return;
+  }
+  const d = R.decoder, t = d.test_bit_level || {}, fp = d.full_payload || {};
+  $('#rs-acc').textContent = pct(t.bit_accuracy);
+  $('#rs-ber').textContent = pct(t.ber);
+  $('#rs-prec').textContent = pct(t.precision);
+  $('#rs-rec').textContent = pct(t.recall);
+  $('#rs-f1').textContent = pct(t.f1);
+  $('#rs-exact').textContent = (fp.exact_id !== undefined) ? (fp.exact_id + '/' + fp.test_images) : (fp.exact_payload !== undefined ? fp.exact_payload + '/' + fp.test_images + ' exact payloads' : '–');
+  const src = (d.dataset_source && d.dataset_source.variant) ? ' (DIV2K ' + d.dataset_source.variant + ')' : '';
+  sub.textContent = 'Held-out DIV2K test split, ' + (fp.test_images || '?') + ' images, ' + d.bit_length + '-bit payloads at α=' + d.alpha +
+    ' (' + (d.payload_mode || 'registry') + ' payloads)' + src + '. Source: ' + R.decoder_metrics_path + '.';
+
+  if (R.matrix && R.matrix.summary){
+    const tb = $('#matrix-table tbody'); tb.innerHTML = '';
+    R.matrix.summary.forEach(e => {
+      const tr = document.createElement('tr');
+      const dec = e.blind_decoder ? e.blind_decoder.split('@')[0].replace('models/windowed_cnn_grid/', '') : '—';
+      tr.innerHTML = '<td>' + e.bits + '</td><td>' + e.alpha.toFixed(3) + '</td><td>' + (e.psnr_mean ?? '–') + '</td><td>' + (e.ssim_mean ?? '–') + '</td>' +
+        '<td>' + pct(e.nonblind_bit_accuracy_mean) + '</td><td>' + pct(e.blind_bit_accuracy_mean) + '</td><td style="font-size:11px">' + dec + '</td>';
+      tb.appendChild(tr);
+    });
+    $('#matrix-table').style.display = '';
+    $('#matrix-note').textContent = 'Experiment matrix (' + R.matrix.experiment_id + '): ' + R.matrix.n_images + ' test images per point; blind accuracy comes only from a decoder trained for that exact (bits, α) - blank means none exists.';
+  }
+  if (R.robustness && R.robustness.summary){
+    const tb = $('#robust-table tbody'); tb.innerHTML = '';
+    R.robustness.summary.forEach(e => {
+      const tr = document.createElement('tr');
+      tr.innerHTML = '<td>' + e.attack + '</td><td>' + e.params + '</td><td>' + (e.psnr_attacked_mean ?? '∞') + '</td><td>' + pct(e.blind_ber_mean) + '</td><td>' + pct(e.nonblind_ber_mean) + '</td>';
+      tb.appendChild(tr);
+    });
+    $('#robust-table').style.display = '';
+    $('#robust-note').textContent = 'Robustness (' + R.robustness.experiment_id + '): ' + R.robustness.n_images + ' images, ' + R.robustness.embed.bit_length + '-bit at α=' + R.robustness.embed.alpha + ', decoder ' + R.robustness.decoder.checkpoint + '. Geometric attacks are not re-synchronised.';
   }
 }
 

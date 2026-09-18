@@ -29,3 +29,20 @@ After placing the two verified official archives under `data/raw/archives/`, run
 ```
 
 The raw and processed directories are DVC-managed and ignored by Git. The loader at `src/training/dataset.py` returns normalized RGB tensors in `[0, 1]`.
+
+## Source variants
+
+`scripts/ingest_div2k_stream.py --variant HR|X4` records which official
+archives the processed split was built from in
+`data/processed/div2k_256/SOURCE.json`; every experiment output
+(`results/*/summary.json`, `models/*/metrics.json`) copies that record.
+
+| Variant | Archives | Size | Notes |
+|---|---|---|---|
+| `HR` (default) | `DIV2K_train_HR.zip`, `DIV2K_valid_HR.zip` | 3.5 GB + 0.45 GB | Full-resolution originals, as in the paper's setup. |
+| `X4` | `DIV2K_train_LR_bicubic_X4.zip`, `DIV2K_valid_LR_bicubic_X4.zip` | 247 MB + 32 MB | The same 900 photographs bicubic-downsampled 4x by the DIV2K authors (~510x340). Since every cover is area-resized to 256x256 anyway, this is a disk-friendly substitute; the two variants differ slightly in fine texture after resizing. |
+
+The results committed in this repository (2026-09) were produced from the
+`X4` variant because the machine had <4 GB free. Re-ingesting from `HR` and
+re-running `scripts/run_experiments.py` reproduces the pipeline on the
+full-resolution source.

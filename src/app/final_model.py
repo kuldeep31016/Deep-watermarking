@@ -81,7 +81,7 @@ SUPPORTED_PAYLOAD_BITS: tuple[int, ...] = tuple(sorted(SUPPORTED_BIT_LENGTHS))
 # Each blind decoder is one Phase 8 ``BlindCNNExtractor`` whose payload width is
 # baked into its weights (``ExtractorConfig.bit_length``) and emitted as exactly
 # that many per-bit logits. There is one checkpoint per supported width.
-BLIND_MODEL_DIR = PROJECT_ROOT / "models" / "phase8_cnn"
+BLIND_MODEL_DIR = decoder_loader.PHASE8_MODEL_DIR
 
 # Widths a single-level, LL-only extractor can serve: the LL sub-band of a
 # 256x256 image has 128 singular values, so <= 128 bits fit in LL alone. 256 /
@@ -89,6 +89,10 @@ BLIND_MODEL_DIR = PROJECT_ROOT / "models" / "phase8_cnn"
 # singular values only - cannot read; 1024 exceeds a 256x256 image's capacity.
 BLIND_TRAINABLE_SIZES: tuple[int, ...] = (8, 16, 32, 64, 128)
 BLIND_MAX_BITS = max(BLIND_TRAINABLE_SIZES)
+
+# Widths the windowed grid can serve (LL + HL overflow reaches 256 on a 256px
+# cover; 512 needs LH/HH as well and 1024 exceeds single-level capacity).
+WINDOWED_TRAINABLE_SIZES: tuple[int, ...] = (8, 16, 32, 64, 128, 256, 512)
 
 # Legacy default: the pre-existing fixed 64-bit Phase 8 checkpoint, used as a
 # fallback for the 64-bit width until a per-size ``blind_cnn_64bit_best.pt``
@@ -231,8 +235,15 @@ def _checkpoint_for(bit_length: int) -> Path:
 
 
 def blind_decoder_sizes() -> list[int]:
-    """Payload widths that currently have a usable blind checkpoint on disk."""
+    """Payload widths that currently have a usable Phase 8 checkpoint on disk."""
     return [n for n in BLIND_TRAINABLE_SIZES if _checkpoint_for(n).is_file()]
+
+
+def active_blind_sizes() -> list[int]:
+    """Payload widths the *active* decoder mode can serve right now."""
+    if decoder_loader.default_decoder_mode() == "windowed_cnn":
+        return decoder_loader.windowed_available_sizes(FINAL_ALPHA, WINDOWED_TRAINABLE_SIZES)
+    return blind_decoder_sizes()
 
 
 def blind_extractor(bit_length: int = BLIND_BIT_LENGTH):
@@ -251,9 +262,11 @@ def blind_extractor(bit_length: int = BLIND_BIT_LENGTH):
     path = _checkpoint_for(bit_length)
     if not path.is_file():
         raise CheckpointError(
-            f"no blind decoder checkpoint for {bit_length}-bit payloads "
-            f"(expected {path.name} under {BLIND_MODEL_DIR}). Run "
-            f"experiments/train_blind_size_models.py to create the per-size checkpoints."
+            f"no Phase 8 blind decoder checkpoint for {bit_length}-bit payloads "
+            f"(expected {path.name} under {BLIND_MODEL_DIR}); Phase 8 checkpoints are not "
+            f"shipped with the repository. Use the windowed decoder instead "
+            f"(DECODER_MODE=windowed_cnn, or leave DECODER_MODE unset so it is picked "
+            f"automatically), or train one with training/colab_train_decoder.py."
         )
     try:
         from src.evaluation.blind_extract import BlindExtractor
@@ -283,20 +296,28 @@ def reset_extractor_cache() -> None:
 def _resolve_blind_extractor(model_width: int) -> tuple[object, str, str | None]:
     """Pick the active blind decoder for a given width.
 
-    Default is the production per-size Phase 8 CNN. ``DECODER_MODE=windowed_cnn``
-    opts into the experimental per-bit decoder when its declared width matches
-    ``model_width``; an unavailable or width-mismatched windowed decoder falls
-    back to the production CNN with a visible ``decoder_fallback`` reason (the
-    app never runs an unrequested network silently).
+    ``decoder_loader.default_decoder_mode()`` decides (env override, else
+    automatic: windowed when available and no Phase 8 checkpoint exists). The
+    windowed decoder is used when its declared width matches ``model_width``;
+    an unavailable or width-mismatched windowed decoder falls back to the Phase
+    8 CNN with a visible ``decoder_fallback`` reason (the app never runs an
+    unrequested network silently).
     """
     mode = decoder_loader.default_decoder_mode()
     if mode != "windowed_cnn":
         return blind_extractor(model_width), "current", None
     try:
-        ext = decoder_loader.windowed_decoder()
+        ext = decoder_loader.windowed_decoder(bit_length=model_width, alpha=FINAL_ALPHA)
     except decoder_loader.DecoderUnavailableError as exc:
+        try:
+            fallback = blind_extractor(model_width)
+        except CheckpointError as phase8_exc:
+            raise CheckpointError(
+                f"no blind decoder for {model_width}-bit payloads: {exc} "
+                f"(Phase 8 fallback also unavailable: {phase8_exc})"
+            ) from exc
         return (
-            blind_extractor(model_width),
+            fallback,
             "current",
             (
                 f"DECODER_MODE=windowed_cnn requested but unavailable ({exc}); "
@@ -385,15 +406,77 @@ def final_model_info() -> dict:
                 "trainable_sizes": list(BLIND_TRAINABLE_SIZES),
                 "available_sizes": blind_decoder_sizes(),
                 "unsupported_sizes": [s for s in SUPPORTED_PAYLOAD_BITS if s > BLIND_MAX_BITS],
+                # what the ACTIVE decoder mode can actually serve right now
+                "active_sizes": active_blind_sizes(),
             },
         },
+        # the decoder a blind request will actually run (auto-selected when
+        # DECODER_MODE is unset - see src/evaluation/decoder_loader.py)
         "decoder_mode": decoder_loader.default_decoder_mode(),
         "windowed_cnn": {
-            "decoder": "experimental per-bit windowed 1D-CNN (DIV2K-trained, opt-in)",
+            "decoder": "per-bit windowed 1D-CNN (DIV2K-trained, 64-bit, alpha 0.02)",
             "checkpoint": str(decoder_loader.WINDOWED_CHECKPOINT.relative_to(PROJECT_ROOT)),
-            "checkpoint_available": decoder_loader.WINDOWED_CHECKPOINT.is_file(),
+            "checkpoint_available": decoder_loader.windowed_checkpoint_available(),
             "requires_original_image": False,
+            "alpha": FINAL_ALPHA,
+            "available_sizes": decoder_loader.windowed_available_sizes(
+                FINAL_ALPHA, WINDOWED_TRAINABLE_SIZES
+            ),
         },
+    }
+
+
+# ---------------------------------------------------------------------------
+# Results (read from disk; nothing typed in)
+# ---------------------------------------------------------------------------
+
+RESULTS_DIR = PROJECT_ROOT / "results"
+
+
+def _read_json(path: Path) -> dict | None:
+    if not path.is_file():
+        return None
+    try:
+        import json
+
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def results_summary() -> dict:
+    """What ``GET /api/results`` returns.
+
+    * ``decoder``    - ``metrics.json`` next to the windowed checkpoint that the
+                       blind route serves (test bit accuracy / BER / exact-ID ...)
+    * ``matrix``     - ``results/matrix/summary.json`` (length x alpha experiment)
+    * ``robustness`` - ``results/robustness/summary.json`` (attack experiment)
+    * ``grid``       - ``models/windowed_cnn_grid/index.json`` (per-point decoders)
+    Every value is ``None`` until the corresponding experiment has been run.
+    """
+    ckpt = decoder_loader.ensure_windowed_checkpoint()
+    decoder_metrics = _read_json(ckpt.parent / "metrics.json") if ckpt else None
+    if decoder_metrics is not None:
+        decoder_metrics = {
+            k: v for k, v in decoder_metrics.items() if k != "full_payload"
+        } | {
+            "full_payload": {
+                k: v for k, v in decoder_metrics.get("full_payload", {}).items() if k != "per_image"
+            }
+        }
+    matrix = _read_json(RESULTS_DIR / "matrix" / "summary.json")
+    robustness = _read_json(RESULTS_DIR / "robustness" / "summary.json")
+    grid = _read_json(PROJECT_ROOT / "models" / "windowed_cnn_grid" / "index.json")
+    return {
+        "decoder": decoder_metrics,
+        "decoder_metrics_path": (
+            str((ckpt.parent / "metrics.json").relative_to(PROJECT_ROOT)) if ckpt else None
+        ),
+        "matrix": matrix,
+        "robustness": robustness,
+        "grid": grid,
+        "figures_dir": "results/figures",
+        "accuracy_format": "fraction in [0, 1]",
     }
 
 
@@ -402,10 +485,24 @@ def final_model_info() -> dict:
 # ---------------------------------------------------------------------------
 
 
-def _final_config(bit_length: int) -> EmbedConfig:
+def _overflow_subbands(bit_length: int, image_shape: tuple[int, int]) -> tuple[str, ...]:
+    """Extra sub-bands the frozen embedder needs when the payload exceeds LL
+    (LL holds min(H, W)/2 bits; then HL, LH, HH) - the same order
+    ``experiments/train_blind_grid.py`` trains the windowed decoders with."""
+    h, w = image_shape[:2]
+    per_band = min((h + 1) // 2, (w + 1) // 2)
+    order = ("HL", "LH", "HH")
+    extra: list[str] = []
+    while bit_length > per_band * (1 + len(extra)) and len(extra) < len(order):
+        extra.append(order[len(extra)])
+    return tuple(extra)
+
+
+def _final_config(bit_length: int, image_shape: tuple[int, int] | None = None) -> EmbedConfig:
     return EmbedConfig(
         wavelet=FINAL_WAVELET,
         subband=FINAL_SUBBAND,
+        extra_subbands=_overflow_subbands(bit_length, image_shape) if image_shape else (),
         mode=FINAL_MODE,
         alpha=FINAL_ALPHA,
         bit_length=bit_length,
@@ -453,7 +550,7 @@ def run_final_embed(image_bytes: bytes, req: FinalEmbedRequest) -> dict:
                 f"{list(SUPPORTED_PAYLOAD_BITS)} bits (blind CNN extraction requires "
                 f"{BLIND_BIT_LENGTH})."
             )
-        config = _final_config(req.bit_length)
+        config = _final_config(req.bit_length, image.shape[:2])
         capacity = subband_capacity(image.shape[:2], config)
         if req.bit_length > capacity:
             raise FinalModelError(
@@ -569,7 +666,7 @@ def run_final_embed(image_bytes: bytes, req: FinalEmbedRequest) -> dict:
         # a blind decode is *attemptable* whenever the payload fits a trained
         # per-size decoder (<= 128 bits); whether it comes back reliably is a
         # separate question answered by /api/final-model/extract/blind.
-        "blind_extractable": config.bit_length <= BLIND_MAX_BITS,
+        "blind_extractable": config.bit_length in active_blind_sizes(),
     }
 
 
@@ -637,7 +734,7 @@ def _blind_unsupported(image: np.ndarray, requested_bits: int, reason: str) -> d
         "requires_original_image": False,
         "blind_supported": False,
         "requested_payload_bits": int(requested_bits),
-        "available_blind_sizes": blind_decoder_sizes(),
+        "available_blind_sizes": active_blind_sizes(),
         "reason": reason,
         "image_info": {"width": int(w), "height": int(h)},
         "recovered": None,
@@ -686,14 +783,18 @@ def run_blind_extract(watermarked_bytes: bytes, req: ExtractRequest) -> dict:
     # payload. A sweep-size payload maps to its own exact checkpoint; a shorter
     # text message maps to the next size up and occupies that decoder's leading
     # positions (its output is sliced back to `requested` before decoding).
-    candidates = [s for s in BLIND_TRAINABLE_SIZES if s >= requested]
+    sizes = (
+        WINDOWED_TRAINABLE_SIZES
+        if decoder_loader.default_decoder_mode() == "windowed_cnn"
+        else BLIND_TRAINABLE_SIZES
+    )
+    candidates = [s for s in sizes if s >= requested]
     if not candidates:
         return _blind_unsupported(
             image,
             requested,
             f"no blind decoder is available for a {requested}-bit payload. Blind "
-            f"decoders exist for {list(BLIND_TRAINABLE_SIZES)}-bit payloads (the "
-            f"single-level LL sub-band holds 128 bits); recover wider payloads with "
+            f"decoders can serve {list(sizes)}-bit payloads; recover wider payloads with "
             f"non-blind extraction, which needs the original image.",
         )
     model_width = min(candidates)
@@ -875,12 +976,12 @@ def run_nonblind_extract(
             f"unsupported payload size {bit_length}; the final model supports "
             f"{list(SUPPORTED_PAYLOAD_BITS)} bits."
         )
-    config = _final_config(bit_length)
+    config = _final_config(bit_length, original.shape[:2])
     capacity = subband_capacity(original.shape[:2], config)
     if bit_length > capacity:
         raise FinalModelError(
-            f"payload of {bit_length} bits does not fit: {FINAL_SUBBAND} of this image "
-            f"provides {capacity} slots."
+            f"payload of {bit_length} bits does not fit: {'+'.join(config.subband_order)} of "
+            f"this image provides {capacity} slots."
         )
 
     recovered = extract_traditional(watermarked, original, config)

@@ -67,10 +67,13 @@ __all__ = [
     "WINDOW_DEFAULT",
     "WindowedCNNConfig",
     "WindowedCNNExtractor",
+    "bit_location",
     "bit_window_singular_values",
     "build_windowed_extractor",
     "load_windowed_checkpoint",
     "luminance_ll_singular_values",
+    "luminance_subband_singular_values",
+    "payload_capacity",
     "save_windowed_checkpoint",
 ]
 
@@ -106,9 +109,11 @@ class WindowedCNNConfig:
     dropout_conv / dropout_fc:
         Dropout after the conv stack (paper ~0.3) and before the output
         (paper ~0.5).
-    wavelet / mode / subband:
+    wavelet / mode / subband / extra_subbands:
         The DWT parameters of the embedding pipeline that generated the
         training data; the feature extractor must match them exactly.
+        ``extra_subbands`` is the embedder's overflow order (e.g. ``("HL",)``
+        for 256-bit payloads on a 256x256 cover, whose LL holds only 128).
     image_size:
         Square size inputs are (re)scaled to before the forward pass.
     """
@@ -125,9 +130,15 @@ class WindowedCNNConfig:
     wavelet: str = "haar"
     mode: str = "symmetric"
     subband: str = "LL"
+    extra_subbands: tuple[str, ...] = ()
     image_size: int = 256
 
+    @property
+    def subband_order(self) -> tuple[str, ...]:
+        return (self.subband, *tuple(self.extra_subbands))
+
     def __post_init__(self) -> None:
+        object.__setattr__(self, "extra_subbands", tuple(self.extra_subbands))
         if self.bit_length <= 0:
             raise ValueError(f"bit_length must be positive; got {self.bit_length}")
         if self.window_size <= 0 or self.window_size % 2 == 0:
@@ -142,8 +153,11 @@ class WindowedCNNConfig:
             raise ValueError(f"fc_units must be positive; got {self.fc_units}")
         if not 0.0 <= self.dropout_conv < 1.0 or not 0.0 <= self.dropout_fc < 1.0:
             raise ValueError("dropouts must be in [0, 1)")
-        if self.subband != "LL":
-            raise ValueError("the windowed decoder currently supports the LL subband only")
+        for name in self.subband_order:
+            if name not in ("LL", "LH", "HL", "HH"):
+                raise ValueError(f"unsupported subband {name!r}")
+        if len(set(self.subband_order)) != len(self.subband_order):
+            raise ValueError(f"subband order has duplicates: {self.subband_order}")
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -154,13 +168,15 @@ class WindowedCNNConfig:
 # ---------------------------------------------------------------------------
 
 
-def luminance_ll_singular_values(rgb_u8: np.ndarray, config: WindowedCNNConfig) -> np.ndarray:
-    """RGB uint8 -> log1p singular values of the DWT-LL luminance subband.
+def luminance_subband_singular_values(
+    rgb_u8: np.ndarray, config: WindowedCNNConfig
+) -> dict[str, np.ndarray]:
+    """RGB uint8 -> raw singular values (float64, descending) of every subband
+    in ``config.subband_order`` of the luminance DWT.
 
     This is the **single authoritative feature path** used both when generating
     training samples and when running live inference, so the two cannot
-    disagree about DWT/SVD/luminance/ordering. Returns ``sigma`` (float64,
-    descending), the raw (non-log) singular values; callers apply log1p.
+    disagree about DWT/SVD/luminance/ordering. Callers apply log1p.
     """
     rgb = np.asarray(rgb_u8, dtype=np.float64)
     if rgb.ndim != 3 or rgb.shape[2] != 3:
@@ -168,20 +184,51 @@ def luminance_ll_singular_values(rgb_u8: np.ndarray, config: WindowedCNNConfig) 
     # BT.601 luma to match the embedder's Y channel exactly.
     y = (rgb * np.asarray(_LUMA_RGB, dtype=np.float64)).sum(axis=2)
     coeffs = decompose_2d(y, wavelet=config.wavelet, mode=config.mode)
-    band = coeffs.ll if config.subband == "LL" else None
-    if band is None:
-        raise ValueError(f"unsupported subband {config.subband!r}")
-    return decompose(band).S
+    bands = {"LL": coeffs.ll, "LH": coeffs.lh, "HL": coeffs.hl, "HH": coeffs.hh}
+    return {name: decompose(bands[name]).S for name in config.subband_order}
+
+
+def luminance_ll_singular_values(rgb_u8: np.ndarray, config: WindowedCNNConfig) -> np.ndarray:
+    """Singular values of the primary subband only (the LL-only legacy path)."""
+    return luminance_subband_singular_values(rgb_u8, config)[config.subband]
+
+
+def payload_capacity(sv_counts: dict[str, int], config: WindowedCNNConfig) -> int:
+    """Bits the configured subband order can carry (mirrors ``embed._plan_windows``)."""
+    total = 0
+    for position, name in enumerate(config.subband_order):
+        start = config.start_sv_index if position == 0 else 0
+        total += max(0, sv_counts[name] - start)
+    return total
+
+
+def bit_location(bit_index: int, sv_counts: dict[str, int], config: WindowedCNNConfig) -> tuple[str, int]:
+    """``bit_index -> (subband, singular-value index)`` following the frozen
+    embedder's plan: the primary subband takes bits from ``start_sv_index``
+    until it is full, then each extra subband from index 0."""
+    remaining = bit_index
+    for position, name in enumerate(config.subband_order):
+        start = config.start_sv_index if position == 0 else 0
+        available = max(0, sv_counts[name] - start)
+        if remaining < available:
+            return name, start + remaining
+        remaining -= available
+    raise ValueError(
+        f"bit_index {bit_index} exceeds the {payload_capacity(sv_counts, config)}-bit capacity of "
+        f"subbands {config.subband_order}"
+    )
 
 
 def bit_window_singular_values(
-    sigma: np.ndarray, bit_index: int, config: WindowedCNNConfig
+    sigma: np.ndarray | dict[str, np.ndarray], bit_index: int, config: WindowedCNNConfig
 ) -> np.ndarray:
     """Return the standardised 15-value window the decoder uses for ``bit_index``.
 
-    The window is centred on ``start_sv_index + bit_index`` (the singular value
-    that carries this bit in the frozen embedder), always exactly
-    ``window_size`` wide. The singular-value spectrum is **edge-padded** by
+    ``sigma`` is either the primary subband's singular values (LL-only payloads)
+    or the per-subband dict from :func:`luminance_subband_singular_values`; in
+    the latter case :func:`bit_location` picks the subband and index the frozen
+    embedder used for this bit. The window is centred on that singular value,
+    always exactly ``window_size`` wide. The singular-value spectrum is **edge-padded** by
     ``radius = window_size // 2`` on both ends first, so leading bits near index
     0 (whose windows would otherwise truncate) still get a full window: the
     padding repeats the boundary singular value, which is stable for the smooth
@@ -193,7 +240,11 @@ def bit_window_singular_values(
     directly). The fixed ``window_size`` output is what keeps windows
     stackable in a batch and consistent at every payload position.
     """
-    center = config.start_sv_index + bit_index
+    if isinstance(sigma, dict):
+        name, center = bit_location(bit_index, {k: len(v) for k, v in sigma.items()}, config)
+        sigma = sigma[name]
+    else:
+        center = config.start_sv_index + bit_index
     radius = config.window_size // 2  # 15 -> 7
     if len(sigma) == 0:
         raise ValueError("cannot build a window from an empty singular-value array")

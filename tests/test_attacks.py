@@ -11,6 +11,7 @@ import cv2
 import numpy as np
 import pytest
 
+from src.evaluation import attacks
 from src.evaluation.attacks import (
     ATTACKS,
     apply_attack,
@@ -60,6 +61,7 @@ ALL_CALLS = [
     ("median_filter", {"ksize": 3}),
     ("resize_roundtrip", {"scale": 0.5}),
     ("rotate", {"degrees": 7}),
+    ("salt_pepper", {"density": 0.02}),
     ("center_crop", {"keep": 0.75}),
     ("combined", {"steps": [{"name": "jpeg_compress", "params": {"quality": 60}},
                             {"name": "gaussian_noise", "params": {"sigma": 4}}], "seed": 2}),
@@ -78,7 +80,7 @@ def test_attack_output_contract(image: np.ndarray, name: str, params: dict) -> N
 def test_registry_is_complete() -> None:
     assert set(attack_names()) == {
         "identity", "jpeg_compress", "gaussian_noise", "gaussian_blur", "median_filter",
-        "resize_roundtrip", "rotate", "center_crop", "combined",
+        "resize_roundtrip", "rotate", "center_crop", "combined", "salt_pepper",
     }
     for spec in ATTACKS.values():
         assert callable(spec.func)
@@ -265,3 +267,34 @@ def test_severity_of() -> None:
     assert severity_of("combined", {"steps": []}) is None
     with pytest.raises(ValueError):
         severity_of("nope", {})
+
+
+# ---------------------------------------------------------------------------
+# salt & pepper
+# ---------------------------------------------------------------------------
+
+
+def test_salt_pepper_zero_density_is_identity() -> None:
+    img = (np.random.default_rng(0).random((32, 32, 3)) * 255).astype(np.uint8)
+    assert np.array_equal(attacks.salt_pepper(img, density=0.0), img)
+
+
+def test_salt_pepper_flips_expected_fraction_to_black_or_white() -> None:
+    rng = np.random.default_rng(1)
+    img = (rng.integers(20, 235, size=(64, 64, 3))).astype(np.uint8)  # no natural 0/255
+    out = attacks.salt_pepper(img, density=0.05, seed=3)
+    changed = np.any(out != img, axis=2)
+    assert abs(changed.mean() - 0.05) < 0.005
+    vals = out[changed]
+    assert set(np.unique(vals).tolist()) <= {0, 255}
+    assert abs((vals == 0).all(axis=1).mean() - 0.5) < 0.1
+
+
+def test_salt_pepper_is_seeded_and_registered() -> None:
+    img = (np.random.default_rng(2).random((32, 32, 3)) * 255).astype(np.uint8)
+    a = attacks.apply_attack("salt_pepper", img, {"density": 0.1}, seed=7)
+    b = attacks.apply_attack("salt_pepper", img, {"density": 0.1}, seed=7)
+    c = attacks.apply_attack("salt_pepper", img, {"density": 0.1}, seed=8)
+    assert np.array_equal(a, b) and not np.array_equal(a, c)
+    assert attacks.ATTACKS["salt_pepper"].randomised
+    assert attacks.severity_of("salt_pepper", {"density": 0.1}) == 0.1

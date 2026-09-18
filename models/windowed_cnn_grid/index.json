@@ -1,0 +1,235 @@
+{
+  "points": {
+    "64bit_a0.015": {
+      "bits": 64,
+      "alpha": 0.015,
+      "run_dir": "models/windowed_cnn_grid/64bit_a0.015",
+      "returncode": 0,
+      "train_seconds": 157.2,
+      "checkpoint": "models/windowed_cnn_grid/64bit_a0.015/windowed_cnn_best.pt",
+      "test_bit_accuracy": 0.743125,
+      "test_ber": 0.25687499999999996,
+      "best_epoch": 6
+    },
+    "8bit_a0.005": {
+      "bits": 8,
+      "alpha": 0.005,
+      "run_dir": "models/windowed_cnn_grid/8bit_a0.005",
+      "returncode": 0,
+      "train_seconds": 30.1,
+      "checkpoint": "models/windowed_cnn_grid/8bit_a0.005/windowed_cnn_best.pt",
+      "test_bit_accuracy": 0.49375,
+      "test_ber": 0.50625,
+      "best_epoch": 1
+    },
+    "8bit_a0.010": {
+      "bits": 8,
+      "alpha": 0.01,
+      "run_dir": "models/windowed_cnn_grid/8bit_a0.010",
+      "returncode": 0,
+      "train_seconds": 35.4,
+      "checkpoint": "models/windowed_cnn_grid/8bit_a0.010/windowed_cnn_best.pt",
+      "test_bit_accuracy": 0.5375,
+      "test_ber": 0.4625,
+      "best_epoch": 9
+    },
+    "8bit_a0.015": {
+      "bits": 8,
+      "alpha": 0.015,
+      "run_dir": "models/windowed_cnn_grid/8bit_a0.015",
+      "returncode": 0,
+      "train_seconds": 28.8,
+      "checkpoint": "models/windowed_cnn_grid/8bit_a0.015/windowed_cnn_best.pt",
+      "test_bit_accuracy": 0.5675,
+      "test_ber": 0.4325,
+      "best_epoch": 2
+    },
+    "8bit_a0.020": {
+      "bits": 8,
+      "alpha": 0.02,
+      "run_dir": "models/windowed_cnn_grid/8bit_a0.020",
+      "returncode": 0,
+      "train_seconds": 30.8,
+      "checkpoint": "models/windowed_cnn_grid/8bit_a0.020/windowed_cnn_best.pt",
+      "test_bit_accuracy": 0.59625,
+      "test_ber": 0.40375000000000005,
+      "best_epoch": 4
+    },
+    "16bit_a0.005": {
+      "bits": 16,
+      "alpha": 0.005,
+      "run_dir": "models/windowed_cnn_grid/16bit_a0.005",
+      "returncode": 0,
+      "train_seconds": 68.3,
+      "checkpoint": "models/windowed_cnn_grid/16bit_a0.005/windowed_cnn_best.pt",
+      "test_bit_accuracy": 0.563125,
+      "test_ber": 0.436875,
+      "best_epoch": 14
+    },
+    "16bit_a0.010": {
+      "bits": 16,
+      "alpha": 0.01,
+      "run_dir": "models/windowed_cnn_grid/16bit_a0.010",
+      "returncode": 0,
+      "train_seconds": 49.7,
+      "checkpoint": "models/windowed_cnn_grid/16bit_a0.010/windowed_cnn_best.pt",
+      "test_bit_accuracy": 0.58625,
+      "test_ber": 0.41374999999999995,
+      "best_epoch": 5
+    },
+    "16bit_a0.015": {
+      "bits": 16,
+      "alpha": 0.015,
+      "run_dir": "models/windowed_cnn_grid/16bit_a0.015",
+      "returncode": 0,
+      "train_seconds": 57.7,
+      "checkpoint": "models/windowed_cnn_grid/16bit_a0.015/windowed_cnn_best.pt",
+      "test_bit_accuracy": 0.620625,
+      "test_ber": 0.379375,
+      "best_epoch": 10
+    },
+    "16bit_a0.020": {
+      "bits": 16,
+      "alpha": 0.02,
+      "run_dir": "models/windowed_cnn_grid/16bit_a0.020",
+      "returncode": 0,
+      "train_seconds": 49.0,
+      "checkpoint": "models/windowed_cnn_grid/16bit_a0.020/windowed_cnn_best.pt",
+      "test_bit_accuracy": 0.66375,
+      "test_ber": 0.33625000000000005,
+      "best_epoch": 4
+    },
+    "32bit_a0.005": {
+      "bits": 32,
+      "alpha": 0.005,
+      "run_dir": "models/windowed_cnn_grid/32bit_a0.005",
+      "returncode": 0,
+      "train_seconds": 69.6,
+      "checkpoint": "models/windowed_cnn_grid/32bit_a0.005/windowed_cnn_best.pt",
+      "test_bit_accuracy": 0.6090625,
+      "test_ber": 0.39093750000000005,
+      "best_epoch": 1
+    },
+    "32bit_a0.010": {
+      "bits": 32,
+      "alpha": 0.01,
+      "run_dir": "models/windowed_cnn_grid/32bit_a0.010",
+      "returncode": 0,
+      "train_seconds": 109.8,
+      "checkpoint": "models/windowed_cnn_grid/32bit_a0.010/windowed_cnn_best.pt",
+      "test_bit_accuracy": 0.6434375,
+      "test_ber": 0.3565625,
+      "best_epoch": 11
+    },
+    "32bit_a0.015": {
+      "bits": 32,
+      "alpha": 0.015,
+      "run_dir": "models/windowed_cnn_grid/32bit_a0.015",
+      "returncode": 0,
+      "train_seconds": 69.6,
+      "checkpoint": "models/windowed_cnn_grid/32bit_a0.015/windowed_cnn_best.pt",
+      "test_bit_accuracy": 0.7034375,
+      "test_ber": 0.29656249999999995,
+      "best_epoch": 1
+    },
+    "32bit_a0.020": {
+      "bits": 32,
+      "alpha": 0.02,
+      "run_dir": "models/windowed_cnn_grid/32bit_a0.020",
+      "returncode": 0,
+      "train_seconds": 97.4,
+      "checkpoint": "models/windowed_cnn_grid/32bit_a0.020/windowed_cnn_best.pt",
+      "test_bit_accuracy": 0.7334375,
+      "test_ber": 0.26656250000000004,
+      "best_epoch": 8
+    },
+    "64bit_a0.005": {
+      "bits": 64,
+      "alpha": 0.005,
+      "run_dir": "models/windowed_cnn_grid/64bit_a0.005",
+      "returncode": 0,
+      "train_seconds": 108.9,
+      "checkpoint": "models/windowed_cnn_grid/64bit_a0.005/windowed_cnn_best.pt",
+      "test_bit_accuracy": 0.64203125,
+      "test_ber": 0.35796874999999995,
+      "best_epoch": 0
+    },
+    "64bit_a0.010": {
+      "bits": 64,
+      "alpha": 0.01,
+      "run_dir": "models/windowed_cnn_grid/64bit_a0.010",
+      "returncode": 0,
+      "train_seconds": 250.8,
+      "checkpoint": "models/windowed_cnn_grid/64bit_a0.010/windowed_cnn_best.pt",
+      "test_bit_accuracy": 0.693125,
+      "test_ber": 0.306875,
+      "best_epoch": 18
+    },
+    "64bit_a0.020": {
+      "bits": 64,
+      "alpha": 0.02,
+      "run_dir": "models/windowed_cnn_grid/64bit_a0.020",
+      "returncode": 0,
+      "train_seconds": 188.4,
+      "checkpoint": "models/windowed_cnn_grid/64bit_a0.020/windowed_cnn_best.pt",
+      "test_bit_accuracy": 0.769375,
+      "test_ber": 0.23062499999999997,
+      "best_epoch": 10
+    },
+    "128bit_a0.005": {
+      "bits": 128,
+      "alpha": 0.005,
+      "run_dir": "models/windowed_cnn_grid/128bit_a0.005",
+      "returncode": 0,
+      "train_seconds": 247.6,
+      "checkpoint": "models/windowed_cnn_grid/128bit_a0.005/windowed_cnn_best.pt",
+      "test_bit_accuracy": 0.62484375,
+      "test_ber": 0.37515624999999997,
+      "best_epoch": 3
+    },
+    "128bit_a0.010": {
+      "bits": 128,
+      "alpha": 0.01,
+      "run_dir": "models/windowed_cnn_grid/128bit_a0.010",
+      "returncode": 0,
+      "train_seconds": 662.7,
+      "checkpoint": "models/windowed_cnn_grid/128bit_a0.010/windowed_cnn_best.pt",
+      "test_bit_accuracy": 0.675546875,
+      "test_ber": 0.324453125,
+      "best_epoch": 26
+    },
+    "128bit_a0.015": {
+      "bits": 128,
+      "alpha": 0.015,
+      "run_dir": "models/windowed_cnn_grid/128bit_a0.015",
+      "returncode": 0,
+      "train_seconds": 330.0,
+      "checkpoint": "models/windowed_cnn_grid/128bit_a0.015/windowed_cnn_best.pt",
+      "test_bit_accuracy": 0.71296875,
+      "test_ber": 0.28703124999999996,
+      "best_epoch": 5
+    },
+    "128bit_a0.020": {
+      "bits": 128,
+      "alpha": 0.02,
+      "run_dir": "models/windowed_cnn_grid/128bit_a0.020",
+      "returncode": 0,
+      "train_seconds": 294.7,
+      "checkpoint": "models/windowed_cnn_grid/128bit_a0.020/windowed_cnn_best.pt",
+      "test_bit_accuracy": 0.7334375,
+      "test_ber": 0.26656250000000004,
+      "best_epoch": 6
+    },
+    "256bit_a0.005": {
+      "bits": 256,
+      "alpha": 0.005,
+      "run_dir": "models/windowed_cnn_grid/256bit_a0.005",
+      "returncode": 0,
+      "train_seconds": 281.2,
+      "checkpoint": "models/windowed_cnn_grid/256bit_a0.005/windowed_cnn_best.pt",
+      "test_bit_accuracy": 0.6346484375,
+      "test_ber": 0.3653515625,
+      "best_epoch": 5
+    }
+  }
+}

@@ -54,7 +54,8 @@ _SIGMA = np.linspace(1000.0, 1.0, 128)  # synthetic decay, like a real spectrum
         {"fc_units": 0},
         {"dropout_conv": 1.0},
         {"dropout_fc": -0.1},
-        {"subband": "HL"},
+        {"subband": "XX"},
+        {"subband": "LL", "extra_subbands": ("LL",)},
     ],
 )
 def test_windowed_config_rejects_invalid(kwargs: dict) -> None:
@@ -467,3 +468,44 @@ def test_blind_extract_beats_rescaled_decoding_on_non_256_cover() -> None:
         f"native-resolution decoding ({native_errors} bit errors) should beat "
         f"decoding a rescaled copy ({rescaled_errors})"
     )
+
+
+# ---------------------------------------------------------------------------
+# multi-subband payloads (256 bits on a 256x256 cover = LL 128 + HL 128)
+# ---------------------------------------------------------------------------
+
+
+def test_bit_location_follows_embedder_overflow_plan() -> None:
+    from src.models.windowed_cnn import bit_location, payload_capacity
+
+    cfg = WindowedCNNConfig(bit_length=256, extra_subbands=("HL",))
+    counts = {"LL": 128, "HL": 128}
+    assert payload_capacity(counts, cfg) == 256
+    assert bit_location(0, counts, cfg) == ("LL", 0)
+    assert bit_location(127, counts, cfg) == ("LL", 127)
+    assert bit_location(128, counts, cfg) == ("HL", 0)
+    assert bit_location(255, counts, cfg) == ("HL", 127)
+    with pytest.raises(ValueError):
+        bit_location(256, counts, cfg)
+
+
+def test_multi_subband_windows_match_embedder_and_ll_legacy_path() -> None:
+    """Windows built from the per-subband dict equal the legacy LL-only windows
+    for LL bits, and come from HL for overflow bits - the same plan the frozen
+    embedder uses, so labels line up with what was modulated."""
+    from src.models.windowed_cnn import luminance_subband_singular_values
+    from src.watermark.embed import EmbedConfig, embed
+
+    rng = np.random.default_rng(3)
+    cover = (rng.random((256, 256, 3)) * 255).astype(np.uint8)
+    bits = rng.integers(0, 2, 256).tolist()
+    result = embed(cover, bits, EmbedConfig(alpha=0.02, bit_length=256, extra_subbands=("HL",)))
+    assert [w[0] for w in result.windows] == ["LL", "HL"]
+
+    cfg = WindowedCNNConfig(bit_length=256, extra_subbands=("HL",))
+    sig = luminance_subband_singular_values(result.watermarked_image, cfg)
+    assert set(sig) == {"LL", "HL"} and len(sig["LL"]) == 128
+    legacy = bit_window_singular_values(sig["LL"], 5, cfg)
+    assert np.allclose(bit_window_singular_values(sig, 5, cfg), legacy)
+    hl_only = bit_window_singular_values(sig["HL"], 3, WindowedCNNConfig(bit_length=128))
+    assert np.allclose(bit_window_singular_values(sig, 128 + 3, cfg), hl_only)

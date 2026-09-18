@@ -1,0 +1,61 @@
+# Robustness / attack testing for the windowed 1D-CNN blind decoder
+# (experiments/run_robustness.py). Independent of configs/phase10_robustness.yaml,
+# which drives the older Phase 8 harness.
+robustness:
+  # Which trained decoder to attack. "grid" picks
+  # models/windowed_cnn_grid/<bits>bit_a<alpha>/windowed_cnn_best.pt for the
+  # embed point below (see experiments/train_blind_grid.py); "shipped" uses
+  # models/experimental/windowed_cnn/windowed_cnn_best.pt (64-bit, alpha 0.02).
+  decoder: grid
+  embed:
+    wavelet: haar
+    mode: symmetric
+    subband: LL
+    start_sv_index: 0
+    alpha: 0.015
+    bit_length: 64
+  data:
+    processed_root: data/processed/div2k_256
+    eval_split: test
+    eval_num_images: 100
+    image_size: 256
+  payload_seed: 20260901
+  noise_seed: 1234
+  # geometric attacks (resize / rotate / crop) are NOT undone before decoding;
+  # the raw desynchronisation damage is what is measured.
+  attacks:
+    jpeg_compress:
+      - {quality: 95}
+      - {quality: 90}
+      - {quality: 75}
+      - {quality: 50}
+      - {quality: 30}
+    gaussian_noise:
+      - {sigma: 1}
+      - {sigma: 2}
+      - {sigma: 5}
+      - {sigma: 10}
+    salt_pepper:
+      - {density: 0.001}
+      - {density: 0.005}
+      - {density: 0.01}
+      - {density: 0.05}
+    gaussian_blur:
+      - {ksize: 3}
+      - {ksize: 5}
+    median_filter:
+      - {ksize: 3}
+      - {ksize: 5}
+    resize_roundtrip:
+      - {scale: 0.9}
+      - {scale: 0.75}
+      - {scale: 0.5}
+    rotate:
+      - {degrees: 1}
+      - {degrees: 5}
+      - {degrees: 45}
+    center_crop:
+      - {keep: 0.95}
+      - {keep: 0.9}
+      - {keep: 0.75}
+  results_dir: results/robustness

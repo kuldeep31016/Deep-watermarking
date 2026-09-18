@@ -209,3 +209,43 @@ def test_undecodable_image_returns_400() -> None:
     )
     assert resp.status_code == 400
     assert "decode" in resp.json()["detail"]
+
+
+def test_blind_route_serves_every_available_width(monkeypatch) -> None:
+    """Fresh-clone contract for the UI: every payload width that has a windowed
+    decoder at the app's alpha can be embedded AND blind-decoded over HTTP."""
+    import base64
+    import uuid
+
+    from src.evaluation import decoder_loader
+
+    monkeypatch.delenv(decoder_loader.DECODER_MODE_ENV, raising=False)
+    if decoder_loader.default_decoder_mode() != "windowed_cnn":
+        pytest.skip("windowed decoder not active")
+    info = client.get("/api/final-model/info").json()
+    sizes = info["windowed_cnn"]["available_sizes"]
+    assert sizes, "at least the shipped 64-bit decoder must be available"
+    rng = np.random.default_rng(9)
+    cover = (rng.random((256, 256, 3)) * 255).astype(np.uint8)
+    ok, buf = cv2.imencode(".png", cv2.cvtColor(cover, cv2.COLOR_RGB2BGR))
+    assert ok
+    for bits in sizes:
+        r = client.post(
+            "/api/final-model/embed",
+            files={"image": ("c.png", buf.tobytes(), "image/png")},
+            data={"payload_source": "uuid", "payload_uuid": str(uuid.uuid4()), "bit_length": bits},
+        )
+        assert r.status_code == 200, (bits, r.text)
+        d = r.json()
+        assert d["blind_extractable"] is True
+        wm = base64.b64decode(d["download"]["data_uri"].split(",", 1)[1])
+        r2 = client.post(
+            "/api/final-model/extract/blind",
+            files={"image": ("wm.png", wm, "image/png")},
+            data={"payload_bit_length": bits, "expected_bits": d["payload"]["bit_string"]},
+        )
+        assert r2.status_code == 200, (bits, r2.text)
+        b = r2.json()
+        assert b["decoder"] == "windowed_cnn" and b["checkpoint_bit_length"] == bits
+        assert b["requires_original_image"] is False
+        assert 0.0 <= b["reference_scoring"]["bit_accuracy"] <= 1.0
