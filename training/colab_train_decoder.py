@@ -78,7 +78,7 @@ from src.models.windowed_cnn import (
     WindowedCNNExtractor,
     bit_window_singular_values,
     load_windowed_checkpoint,
-    luminance_ll_singular_values,
+    luminance_subband_singular_values,
     save_windowed_checkpoint,
 )
 from src.watermark import id_registry
@@ -167,11 +167,40 @@ class PipelineConfig:
     train_split: str = "train"
     validation_split: str = "validation"
     test_split: str = "test"
+    # "registry": id_registry.encode_id_bits(index % 16) - the 16 fixed 64-bit
+    #             patterns the ownership flow embeds (bit_length must be 64).
+    # "random":   uniformly random bits, deterministic per (split, index), so
+    #             the decoder is evaluated on payloads it never saw in training.
+    payload_mode: str = "registry"
+    # extra random payloads per TRAIN image (validation/test always use one).
+    payloads_per_image: int = 1
+    copy_to_repo: bool = True
+
+    def __post_init__(self) -> None:
+        if self.payload_mode not in ("registry", "random"):
+            raise ValueError(f"payload_mode must be 'registry' or 'random'; got {self.payload_mode!r}")
+        if self.payload_mode == "registry" and self.bit_length != id_registry.ENCODED_BITS + 4:
+            raise ValueError("payload_mode='registry' requires bit_length=64")
+        if self.payloads_per_image < 1:
+            raise ValueError("payloads_per_image must be >= 1")
+
+    def extra_subbands(self) -> tuple[str, ...]:
+        """Overflow subbands the frozen embedder needs for this payload at this
+        image size (LL holds image_size/2 bits; then HL, LH, HH)."""
+        per_band = self.image_size // 2
+        order = ("HL", "LH", "HH")
+        extra: list[str] = []
+        while self.bit_length > per_band * (1 + len(extra)):
+            if len(extra) == len(order):
+                raise ValueError(f"{self.bit_length} bits exceed a {self.image_size}px cover's single-level capacity")
+            extra.append(order[len(extra)])
+        return tuple(extra)
 
     def embed_config(self) -> EmbedConfig:
         return EmbedConfig(
             wavelet="haar",
             subband="LL",
+            extra_subbands=self.extra_subbands(),
             mode="symmetric",
             alpha=self.alpha,
             bit_length=self.bit_length,
@@ -185,6 +214,7 @@ class PipelineConfig:
             wavelet="haar",
             mode="symmetric",
             subband="LL",
+            extra_subbands=self.extra_subbands(),
             image_size=self.image_size,
         )
 
@@ -212,10 +242,22 @@ class PipelineConfig:
             train_split=self.train_split,
             validation_split=self.validation_split,
             test_split=self.test_split,
+            payload_mode=self.payload_mode,
+            payloads_per_image=self.payloads_per_image,
+            copy_to_repo=self.copy_to_repo,
         )
 
     def config_hash(self) -> str:
-        raw = (self.bit_length, self.window_size, self.image_size, self.alpha, self.split_mode)
+        raw = (
+            self.bit_length,
+            self.window_size,
+            self.image_size,
+            self.alpha,
+            self.split_mode,
+            self.payload_mode,
+            self.payloads_per_image,
+            self.seed,
+        )
         return hashlib.sha256(json.dumps(raw, sort_keys=True).encode()).hexdigest()[:12]
 
 
@@ -241,11 +283,14 @@ def load_pipeline_config(project_root: str, overrides: dict | None = None) -> Pi
             train_split=raw.get("data", {}).get("train_split", "train"),
             validation_split=raw.get("data", {}).get("validation_split", "validation"),
             test_split=raw.get("data", {}).get("test_split", "test"),
+            payload_mode=str(raw.get("payload", {}).get("mode", "registry")),
+            payloads_per_image=int(raw.get("payload", {}).get("per_image", 1)),
         )
+    merged = asdict(base)
     for key, value in (overrides or {}).items():
-        if value is not None and hasattr(base, key):
-            base = PipelineConfig(**{**asdict(base), key: value})
-    return base
+        if value is not None and key in merged:
+            merged[key] = value
+    return PipelineConfig(**merged)
 
 
 # ---------------------------------------------------------------------------
@@ -429,17 +474,28 @@ def synthesize_windows(
     wm = result.watermarked_image
     if wm.shape[:2] != (cfg.image_size, cfg.image_size):
         wm = cv2.resize(wm, (cfg.image_size, cfg.image_size), interpolation=cv2.INTER_AREA)
-    sigma = luminance_ll_singular_values(wm, cfg.model_config())
+    sigma = luminance_subband_singular_values(wm, cfg.model_config())
     return np.stack(
         [bit_window_singular_values(sigma, i, cfg.model_config()) for i in range(len(payload))]
     )  # (bit_length, window_size)
 
 
-def _payload_for(index: int, cfg: PipelineConfig) -> list[int]:
-    """A real registry-ID payload (codec + XOR mask) seeded by index - the exact
-    physical bits the ownership flow embeds (labels = these bits)."""
-    id_ = int(index) % id_registry.MAX_ENTRIES
-    return id_registry.encode_id_bits(id_)
+_SPLIT_OFFSET = {"train": 0, "validation": 1, "test": 2}
+
+
+def _payload_for(index: int, cfg: PipelineConfig, split: str = "train") -> list[int]:
+    """The payload embedded into sample ``index`` of ``split``.
+
+    ``registry``: a real registry-ID payload (codec + XOR mask) - the exact
+    physical bits the ownership flow embeds (labels = these bits).
+    ``random``: uniformly random bits, deterministic in ``(seed, split, index)``
+    so validation/test payloads are fixed and disjoint from training ones.
+    """
+    if cfg.payload_mode == "registry":
+        id_ = int(index) % id_registry.MAX_ENTRIES
+        return id_registry.encode_id_bits(id_)
+    rng = np.random.default_rng([int(cfg.seed), _SPLIT_OFFSET.get(split, 9), int(index)])
+    return rng.integers(0, 2, size=cfg.bit_length).astype(int).tolist()
 
 
 def cache_manifest(cfg: PipelineConfig) -> dict:
@@ -452,7 +508,13 @@ def cache_manifest(cfg: PipelineConfig) -> dict:
         "wavelet": "haar",
         "subband": "LL",
         "split_mode": cfg.split_mode,
-        "payload_source": "id_registry.encode_id_bits(id) for id in [0,16)",
+        "payload_mode": cfg.payload_mode,
+        "payloads_per_image": cfg.payloads_per_image,
+        "payload_source": (
+            "id_registry.encode_id_bits(id) for id in [0,16)"
+            if cfg.payload_mode == "registry"
+            else "uniform random bits, rng([seed, split, index])"
+        ),
         "feature_transform": "per-window log1p -> standardise inside bit_window_singular_values",
         "embedder": "src.watermark.embed.embed (frozen Phase 6) - unmodified",
     }
@@ -485,7 +547,8 @@ def generate_cache(cfg: PipelineConfig, splits: dict[str, list[str]]) -> dict[st
                 print(f"[cache] reuse {npz.name} ({n * cfg.bit_length} windows)")
                 out[split] = npz
                 continue
-        print(f"[cache] generating {split} ({n} images x {cfg.bit_length} bits) ...")
+        ppi = cfg.payloads_per_image if split == "train" else 1
+        print(f"[cache] generating {split} ({n} images x {ppi} payloads x {cfg.bit_length} bits) ...")
         t0 = time.time()
         all_windows: list[np.ndarray] = []
         all_labels: list[np.ndarray] = []
@@ -493,15 +556,16 @@ def generate_cache(cfg: PipelineConfig, splits: dict[str, list[str]]) -> dict[st
             bgr = cv2.imread(str(path), cv2.IMREAD_COLOR)
             if bgr is None:
                 raise ColabPipelineError(f"unreadable image {path}")
-            payload = _payload_for(idx, cfg)
-            windows = synthesize_windows(bgr, payload, cfg)
-            all_windows.append(windows)
-            all_labels.append(np.asarray(payload, dtype=np.float32))
+            for k in range(ppi):
+                payload = _payload_for(idx * ppi + k, cfg, split)
+                windows = synthesize_windows(bgr, payload, cfg)
+                all_windows.append(windows)
+                all_labels.append(np.asarray(payload, dtype=np.float32))
             if (idx + 1) % 100 == 0:
                 print(f"  ... {idx + 1}/{n} images ({time.time() - t0:.1f}s)")
-        W = np.concatenate(all_windows).astype(np.float32)  # (n*bits, window_size)
-        L = np.concatenate(all_labels).astype(np.float32)  # (n*bits,)
-        img_ids = np.repeat(np.arange(n), cfg.bit_length).astype(np.int64)
+        W = np.concatenate(all_windows).astype(np.float32)  # (n*ppi*bits, window_size)
+        L = np.concatenate(all_labels).astype(np.float32)  # (n*ppi*bits,)
+        img_ids = np.repeat(np.arange(n * ppi), cfg.bit_length).astype(np.int64)
         np.savez(npz, windows=W, labels=L, img_ids=img_ids)
         out[split] = npz
         _sanity_checks(W, L, cfg, split)
@@ -519,7 +583,7 @@ def generate_cache(cfg: PipelineConfig, splits: dict[str, list[str]]) -> dict[st
                 rgb = cv2.resize(
                     rgb, (cfg.image_size, cfg.image_size), interpolation=cv2.INTER_AREA
                 )
-            sigma = luminance_ll_singular_values(rgb, cfg.model_config())
+            sigma = luminance_subband_singular_values(rgb, cfg.model_config())
             windows = np.stack(
                 [
                     bit_window_singular_values(sigma, i, cfg.model_config())
@@ -940,54 +1004,78 @@ def evaluate_model(
     )
     print(f"[eval] test bit-level: {bit_metrics}")
 
-    # Full-payload registry-ID recovery (decode via the real codec).
+    # Full-payload recovery per test image: exact-match rate + per-image BER,
+    # plus registry-ID decoding through the real codec when the payloads are
+    # registry patterns.
+    registry = cfg.payload_mode == "registry"
     recovered = []
-    n_ids_ok = n_registered = 0
+    n_exact_payload = n_ids_ok = n_registered = 0
     for img_id in np.unique(img_ids_test):
         mask = img_ids_test == img_id
         pred_bits = (probs_test[mask] > 0.5).astype(int).tolist()
         true_bits = labels_test[mask].astype(int).tolist()
-        true_id, _, _ = id_registry.decode_id_bits(true_bits)
-        try:
-            pred_id, mean_conf, min_conf = id_registry.decode_id_bits(pred_bits)
-            valid = True
-        except ValueError:
-            pred_id, mean_conf, min_conf, valid = -1, 0.0, 0.0, False
-        exact = valid and pred_id == true_id
-        n_ids_ok += int(exact)
-        n_registered += int(valid and min_conf >= threshold)
-        recovered.append(
-            {
-                "image_id": int(img_id),
-                "true_id": int(true_id),
-                "pred_id": int(pred_id),
-                "exact": exact,
-                "valid": valid,
-                "mean_conf": float(mean_conf),
-                "min_conf": float(min_conf),
-                "ber": float(1.0 - float(np.mean(mask & (pred_bits == true_bits)))),
-            }
-        )
+        ber = float(np.mean(np.asarray(pred_bits) != np.asarray(true_bits)))
+        exact_payload = ber == 0.0
+        n_exact_payload += int(exact_payload)
+        row = {"image_id": int(img_id), "ber": ber, "exact_payload": exact_payload}
+        if registry:
+            true_id, _, _ = id_registry.decode_id_bits(true_bits)
+            try:
+                pred_id, mean_conf, min_conf = id_registry.decode_id_bits(pred_bits)
+                valid = True
+            except ValueError:
+                pred_id, mean_conf, min_conf, valid = -1, 0.0, 0.0, False
+            exact = valid and pred_id == true_id
+            n_ids_ok += int(exact)
+            n_registered += int(valid and min_conf >= threshold)
+            row.update(
+                {
+                    "true_id": int(true_id),
+                    "pred_id": int(pred_id),
+                    "exact": exact,
+                    "valid": valid,
+                    "mean_conf": float(mean_conf),
+                    "min_conf": float(min_conf),
+                }
+            )
+        recovered.append(row)
     full_payload = {
+        "payload_mode": cfg.payload_mode,
         "test_images": len(recovered),
-        "exact_id": n_ids_ok,
-        "exact_id_rate": n_ids_ok / max(len(recovered), 1),
-        "registered_at_threshold": n_registered,
-        "registered_rate": n_registered / max(len(recovered), 1),
-        "threshold_used": threshold,
-        "mean_min_conf": float(np.mean([r["min_conf"] for r in recovered])),
+        "exact_payload": n_exact_payload,
+        "exact_payload_rate": n_exact_payload / max(len(recovered), 1),
+        "mean_ber": float(np.mean([r["ber"] for r in recovered])) if recovered else None,
         "per_image": recovered,
     }
+    if registry:
+        full_payload.update(
+            {
+                "exact_id": n_ids_ok,
+                "exact_id_rate": n_ids_ok / max(len(recovered), 1),
+                "registered_at_threshold": n_registered,
+                "registered_rate": n_registered / max(len(recovered), 1),
+                "threshold_used": threshold,
+                "mean_min_conf": float(np.mean([r["min_conf"] for r in recovered])),
+            }
+        )
+        print(
+            f"[eval] full-payload ID recovery: exact={n_ids_ok}/{len(recovered)} "
+            f"registered={n_registered}/{len(recovered)} @ threshold {threshold}"
+        )
     print(
-        f"[eval] full-payload ID recovery: exact={n_ids_ok}/{len(recovered)} "
-        f"registered={n_registered}/{len(recovered)} @ threshold {threshold}"
+        f"[eval] full-payload exact match: {n_exact_payload}/{len(recovered)} "
+        f"mean BER {full_payload['mean_ber']}"
     )
 
     # Controlled test on image files currently in the repo - skip in smoke runs.
     return {
         "bit_level": bit_metrics,
         "full_payload": full_payload,
-        "false_positives": _false_positive_test(cfg, cache, model, device, threshold),
+        "false_positives": (
+            _false_positive_test(cfg, cache, model, device, threshold)
+            if registry
+            else {"skipped": "registry-ID false-positive test applies to payload_mode='registry' only"}
+        ),
         "robustness": _robustness_mini(cfg, cache, model, device, n=8),
         "data_quality": None,
     }
@@ -1050,7 +1138,7 @@ def _robustness_mini(
 
     results = []
     for idx, path in enumerate(files[:n]):
-        payload = _payload_for(idx, cfg)
+        payload = _payload_for(idx, cfg, "test")
         bgr = cv2.imread(path, cv2.IMREAD_COLOR)
         rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
         if rgb.shape[:2] != (cfg.image_size, cfg.image_size):
@@ -1067,7 +1155,7 @@ def _robustness_mini(
         per = {}
         for name, arr in variants.items():
             arr_rgb = cv2.cvtColor(arr, cv2.COLOR_BGR2RGB)
-            sigma = luminance_ll_singular_values(arr_rgb, cfg.model_config())
+            sigma = luminance_subband_singular_values(arr_rgb, cfg.model_config())
             windows = np.stack(
                 [
                     bit_window_singular_values(sigma, i, cfg.model_config())
@@ -1082,6 +1170,17 @@ def _robustness_mini(
     return {"images": results}
 
 
+def _dataset_source(cfg: PipelineConfig) -> dict | str:
+    """Provenance written by scripts/ingest_div2k_stream.py (HR vs X4 archives)."""
+    src = Path(cfg.processed_root) / "SOURCE.json"
+    if src.is_file():
+        try:
+            return json.loads(src.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            pass
+    return "unknown (no SOURCE.json in processed root)"
+
+
 def write_metrics(cfg: PipelineConfig, trained: dict, eval_results: dict) -> str:
     metrics = {
         "model": "WindowedCNNExtractor",
@@ -1090,6 +1189,10 @@ def write_metrics(cfg: PipelineConfig, trained: dict, eval_results: dict) -> str
         "image_size": cfg.image_size,
         "alpha": cfg.alpha,
         "split_mode": cfg.split_mode,
+        "payload_mode": cfg.payload_mode,
+        "payloads_per_image": cfg.payloads_per_image,
+        "seed": cfg.seed,
+        "dataset_source": _dataset_source(cfg),
         "best_epoch": trained["best_epoch"],
         "best_val_bit_acc": trained["best_val_bit_acc"],
         "early_stopped": trained["early_stopped"],
@@ -1231,6 +1334,19 @@ def main(argv: list[str] | None = None) -> int:
         help="tiny train/val/test caps + 1 epoch to verify the pipeline",
     )
     parser.add_argument("--epochs", type=int)
+    parser.add_argument("--alpha", type=float, help="embedding strength (default from yaml)")
+    parser.add_argument("--bit-length", type=int, help="payload bits (default from yaml)")
+    parser.add_argument("--payload-mode", choices=["registry", "random"])
+    parser.add_argument("--payloads-per-image", type=int)
+    parser.add_argument("--seed", type=int)
+    parser.add_argument("--train-images", type=int)
+    parser.add_argument("--val-images", type=int)
+    parser.add_argument("--test-images", type=int)
+    parser.add_argument(
+        "--no-copy-to-repo",
+        action="store_true",
+        help="do not overwrite models/experimental/windowed_cnn with this run",
+    )
     parser.add_argument("--split-mode", choices=["700", "800"])
     parser.add_argument(
         "--fake",
@@ -1256,9 +1372,15 @@ def main(argv: list[str] | None = None) -> int:
             "split_mode": args.split_mode,
             "out_dir": args.out_dir,
             "cache_dir": args.cache_dir,
-            "train_images": (8 if args.smoke else None),
-            "val_images": (4 if args.smoke else None),
-            "test_images": (4 if args.smoke else None),
+            "alpha": args.alpha,
+            "bit_length": args.bit_length,
+            "payload_mode": args.payload_mode,
+            "payloads_per_image": args.payloads_per_image,
+            "seed": args.seed,
+            "copy_to_repo": (False if args.no_copy_to_repo else None),
+            "train_images": (8 if args.smoke else args.train_images),
+            "val_images": (4 if args.smoke else args.val_images),
+            "test_images": (4 if args.smoke else args.test_images),
         },
     ).resolved()
 
@@ -1295,7 +1417,8 @@ def main(argv: list[str] | None = None) -> int:
     energy = evaluate_model(cfg, cache, trained)
     write_metrics(cfg, trained, energy)
     package_artifacts(cfg)
-    load_checkpoints_into_repo(cfg)
+    if cfg.copy_to_repo:
+        load_checkpoints_into_repo(cfg)
     return 0
 
 

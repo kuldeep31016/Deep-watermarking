@@ -33,7 +33,8 @@ from src.models.windowed_cnn import (
     WindowedCNNExtractor,
     bit_window_singular_values,
     load_windowed_checkpoint,
-    luminance_ll_singular_values,
+    luminance_subband_singular_values,
+    payload_capacity,
 )
 
 __all__ = ["WindowedExtractor"]
@@ -94,15 +95,13 @@ class WindowedExtractor:
         # Measured on DIV2K covers embedded at their native size, resizing to
         # 256 before decoding cost ~0.12 BER and dropped exact registry-ID
         # recovery from ~95% to ~55%.
-        sigma = luminance_ll_singular_values(rgb_u8, self.config)
-        needed = self.config.start_sv_index + self.config.bit_length
-        if len(sigma) < needed:
+        sigma = luminance_subband_singular_values(rgb_u8, self.config)
+        capacity = payload_capacity({k: len(v) for k, v in sigma.items()}, self.config)
+        if capacity < self.config.bit_length:
             raise ValueError(
                 f"image is too small to carry a {self.config.bit_length}-bit payload: its "
-                f"{self.config.subband} sub-band yields {len(sigma)} singular values, "
-                f"but bit {self.config.bit_length - 1} lives at index {needed - 1}. "
-                f"Supply the watermarked image at its original size (at least "
-                f"{2 * needed}x{2 * needed} pixels)."
+                f"{'+'.join(self.config.subband_order)} sub-band(s) provide {capacity} "
+                f"singular-value slots. Supply the watermarked image at its original size."
             )
         windows = np.stack(
             [

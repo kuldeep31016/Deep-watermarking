@@ -19,9 +19,9 @@ un-synchronised damage is the point. Synchronisation is a later-phase concern.
 
 Determinism
 -----------
-The only randomised attacks are ``gaussian_noise`` and any ``combined`` pipeline
-that includes it. Both take an explicit integer ``seed`` so a run reproduces
-exactly.
+The only randomised attacks are ``gaussian_noise``, ``salt_pepper`` and any
+``combined`` pipeline that includes them. All take an explicit integer ``seed``
+so a run reproduces exactly.
 """
 
 from __future__ import annotations
@@ -46,6 +46,7 @@ __all__ = [
     "median_filter",
     "resize_roundtrip",
     "rotate",
+    "salt_pepper",
     "severity_of",
 ]
 
@@ -106,6 +107,26 @@ def gaussian_noise(image: np.ndarray, *, sigma: float, seed: int = 0) -> np.ndar
     rng = np.random.default_rng(int(seed))
     noisy = arr + rng.normal(0.0, s, size=arr.shape)
     return _to_u8(noisy)
+
+
+def salt_pepper(image: np.ndarray, *, density: float, seed: int = 0) -> np.ndarray:
+    """Impulse noise: a fraction ``density`` of pixels is set to black or white
+    (half each, chosen uniformly at random over all pixels)."""
+    arr = _validate(image).copy()
+    d = float(density)
+    if not 0.0 <= d <= 1.0:
+        raise ValueError(f"density must be in [0, 1]; got {density}")
+    if d == 0.0:
+        return arr
+    rng = np.random.default_rng(int(seed))
+    h, w = arr.shape[:2]
+    n = int(round(d * h * w))
+    flat = rng.choice(h * w, size=n, replace=False)
+    ys, xs = np.divmod(flat, w)
+    half = n // 2
+    arr[ys[:half], xs[:half]] = 0
+    arr[ys[half:], xs[half:]] = 255
+    return arr
 
 
 def gaussian_blur(image: np.ndarray, *, ksize: int) -> np.ndarray:
@@ -188,7 +209,7 @@ def combined(image: np.ndarray, *, steps: Sequence[dict], seed: int = 0) -> np.n
         params = dict(step.get("params", {}))
         if name == "combined":
             raise ValueError("combined pipelines cannot nest a 'combined' step")
-        if name == "gaussian_noise":
+        if ATTACKS[name].randomised:
             params.setdefault("seed", int(seed) + 1 + position)
         out = apply_attack(name, out, params)
     return out
@@ -229,6 +250,7 @@ ATTACKS: dict[str, AttackSpec] = {
     "identity": AttackSpec("identity", identity, "", True),
     "jpeg_compress": AttackSpec("jpeg_compress", jpeg_compress, "quality", False),
     "gaussian_noise": AttackSpec("gaussian_noise", gaussian_noise, "sigma", True, randomised=True),
+    "salt_pepper": AttackSpec("salt_pepper", salt_pepper, "density", True, randomised=True),
     "gaussian_blur": AttackSpec("gaussian_blur", gaussian_blur, "ksize", True),
     "median_filter": AttackSpec("median_filter", median_filter, "ksize", True),
     "resize_roundtrip": AttackSpec("resize_roundtrip", resize_roundtrip, "scale", False),

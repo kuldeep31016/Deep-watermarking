@@ -173,6 +173,15 @@ async def final_model_extract_nonblind(
     return JSONResponse(result)
 
 
+@app.get("/api/results")
+def results() -> dict:
+    """Experiment results as committed under ``results/`` and the decoder's own
+    ``metrics.json`` - read from disk on every call, never hard-coded. Each
+    section is ``null`` when its file does not exist (i.e. the experiment has
+    not been run), so the page can say so instead of showing stale numbers."""
+    return final_model.results_summary()
+
+
 @app.get("/")
 def index() -> FileResponse:
     return FileResponse(_STATIC_DIR / "index.html")

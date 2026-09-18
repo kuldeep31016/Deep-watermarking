@@ -34,7 +34,7 @@ from torch.utils.data import Dataset
 from src.models.windowed_cnn import (
     WindowedCNNConfig,
     bit_window_singular_values,
-    luminance_ll_singular_values,
+    luminance_subband_singular_values,
 )
 from src.watermark.embed import EmbedConfig, embed
 
@@ -126,6 +126,7 @@ class WindowedExtractionDataset(Dataset[tuple[torch.Tensor, torch.Tensor]]):
             wavelet=base.wavelet,
             mode=base.mode,
             subband=base.subband,
+            extra_subbands=base.extra_subbands,
             image_size=base.image_size,
         )
 
@@ -139,7 +140,7 @@ class WindowedExtractionDataset(Dataset[tuple[torch.Tensor, torch.Tensor]]):
         return EmbedConfig(
             wavelet=m.wavelet,
             subband=m.subband,
-            extra_subbands=base.extra_subbands,
+            extra_subbands=m.extra_subbands or base.extra_subbands,
             alpha=base.alpha,
             bit_length=m.bit_length,
             start_sv_index=m.start_sv_index,
@@ -183,7 +184,7 @@ class WindowedExtractionDataset(Dataset[tuple[torch.Tensor, torch.Tensor]]):
                 interpolation=cv2.INTER_AREA,
             )
         # The SAME feature path used at live inference (never the original image).
-        sigma = luminance_ll_singular_values(watermarked, self.model_config)
+        sigma = luminance_subband_singular_values(watermarked, self.model_config)
         windows = []
         labels = []
         for i in range(self.config.bit_length):

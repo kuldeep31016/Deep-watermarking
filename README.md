@@ -1,6 +1,8 @@
 # Deep Watermarking
 
-Research framework for **invisible, blind image watermarking** based on a reproducible **DWT–SVD–CNN** pipeline. It embeds a secret payload into an image so that the payload can later be read back **without** needing the original image (blind extraction) or a neural-network lookup — all using the same frozen embedder.
+Research framework for **invisible, blind image watermarking** based on a reproducible **DWT–SVD–CNN** pipeline. It embeds a secret payload into an image so that the payload can later be read back **without** needing the original image (blind extraction), using a per-bit windowed 1D-CNN trained on the same frozen embedder.
+
+> **Status (2026-09-18 audit):** see `docs/AUDIT_2026-09-18.md`. Every number in this README traces to a file under `results/` or `models/`; nothing is typed in by hand. Blind accuracy is far from the values in the accompanying paper draft — read the *Measured results* section before quoting anything.
 
 This repository is self-contained; it is intentionally independent from any other application in the parent workspace.
 
@@ -112,8 +114,8 @@ extract ──► un-mask ──► de-interleave ──► confidence vote ─�
 ### Extraction pipeline
 
 - **Non-blind decoder** (`src/app/final_model.py`): needs both the watermarked and the original image; yields near-perfect bit recovery and is the reference for how well embedding worked at all.
-- **Phase 8 blind CNN**: the original neural blind decoder. **Note: its checkpoint is not present in this repo** (`models/phase8_cnn/` is missing), so it cannot currently be served; the loader reports `checkpoint_available=false`.
-- **Windowed 1D-CNN** (experimental, opt-in): predicts one bit at a time from a **fixed local window of 15 DWT-LL singular values** centered on the singular value carrying that bit. Enabled with the environment variable `DECODER_MODE=windowed_cnn`.
+- **Phase 8 blind CNN**: the original neural blind decoder. **Its checkpoint was never committed** (`models/phase8_cnn/` does not exist in git), so it cannot be served. Selected only with `DECODER_MODE=current`.
+- **Windowed 1D-CNN** (the served blind decoder): predicts one bit at a time from a **fixed local window of 15 singular values** centered on the singular value carrying that bit, in the same sub-band order the embedder used (LL, then HL for payloads wider than LL). One decoder exists per `(bit_length, alpha)` under `models/windowed_cnn_grid/` (each ships as a ~0.5 MB `windowed_cnn_model_package.zip`, unpacked on first use); the app picks the decoder trained for the requested width at its fixed `alpha = 0.02`, so **8, 16, 32, 64, 128 and 256-bit payloads are all blind-decodable over the API**. With `DECODER_MODE` unset this decoder family is chosen automatically whenever no Phase 8 checkpoint exists (`src/evaluation/decoder_loader.py`).
 
 ---
 
@@ -121,19 +123,19 @@ extract ──► un-mask ──► de-interleave ──► confidence vote ─�
 
 Both neural decoders are **PyTorch**.
 
-### Phase 8 CNN (default blind decoder)
+### Phase 8 CNN (legacy)
 
-Default decoder in the app, **but no checkpoint ships with this repo today** — see **Known limitations**.
+No checkpoint ships with this repo; `DECODER_MODE=current` selects it and the blind route answers HTTP 503 until one is trained.
 
-### Windowed 1D-CNN (experimental)
+### Windowed 1D-CNN (served blind decoder)
 
 A small per-bit network (~68k params) shared by all bits, whose input is the 15-value singular-value window around the target bit:
 
 ```
 input: window of 15 log1p-singular values
-  └─► Conv1d(1 → 32, kernel 3, same) + ReLU
-  └─► Conv1d(32 → 64, kernel 3, same) + ReLU
-  └─► Dropout(0.3)
+  └─► Conv1d(1 → 32, kernel 3, same, no bias) + BatchNorm1d + ReLU
+  └─► Conv1d(32 → 64, kernel 3, same, no bias) + BatchNorm1d + ReLU
+  └─► Dropout(0.3)          (the paper draft has Dropout(0.3) after EACH conv and no BatchNorm)
   └─► Flatten ──► Dense(64, ReLU)
   └─► Dropout(0.5)
   └─► Dense(1) + sigmoid  →  P(bit = 1)
@@ -147,11 +149,18 @@ Feature path (shared with the Phase 8 decoder): **luminance → DWT-LL → log1p
 
 ## Dataset: DIV2K
 
-- Official **DIV2K** (900 released images).
-- Ingested by `scripts/ingest_div2k_stream.py` directly from the official HR archives to `data/processed/div2k_256` at **256×256** (`INTER_AREA`), without ever writing full-res PNGs. Result: **900 files, ~117 MB**.
+- Official **DIV2K** (900 released images; the paper's "800/100/100" would need 1000).
+- Ingested by `scripts/ingest_div2k_stream.py --variant HR|X4` directly from the official archives to `data/processed/div2k_256` at **256×256** (`INTER_AREA`), without ever writing full-size PNGs. Result: **900 files, ~115 MB**. The variant used is recorded in `data/processed/div2k_256/SOURCE.json` and copied into every result file. **The committed results were produced from the `X4` archives** (same photos, 4× bicubic-downsampled by the DIV2K authors, chosen because the machine had <4 GB free) — see `docs/dataset.md`.
 - Split: **700 train** (`0001–0700`), **100 validation** (`0701–0800`), **100 test** (`0801–0900`, the official VALID set).
 
-Each training sample is synthesised **on the fly** by the frozen embedder: pick a DIV2K image, generate a random registry-style payload, run the real `embed()` at `alpha = 0.02`, compute the per-bit 15-value windows, and label each window with its bit. The model therefore learns the exact signal the production system embeds — no simulated data.
+Each training sample is synthesised by the frozen embedder: pick a DIV2K image, generate a payload, run the real `embed()`, compute the per-bit 15-value windows, and label each window with its bit. Two payload modes exist (`--payload-mode`):
+
+| Mode | Payloads | Used for |
+|---|---|---|
+| `registry` | the 16 fixed registry-ID patterns (`id_registry.encode_id_bits(i % 16)`), also in validation/test | the shipped 64-bit / α=0.02 demo decoder (`models/experimental/windowed_cnn`) |
+| `random` | uniformly random bits, deterministic per (split, index), 4 payloads per training image | the (bits × α) grid (`models/windowed_cnn_grid/`, `experiments/train_blind_grid.py`) — decoders are scored on payloads they never saw |
+
+The `registry` mode's test accuracy is measured on the same 16 patterns the model was trained on; treat it as demo-specific, not general.
 
 ---
 
@@ -168,9 +177,13 @@ python -m pip install -e ".[training,tracking,dev]"
 python scripts/ingest_div2k_stream.py
 
 # 2) real 50-epoch training + honest evaluation + artifact packaging
-python training/colab_train_decoder.py --project-root . --processed
+python scripts/train.py                                   # one decoder (configs/windowed_cnn.yaml)
+python scripts/train.py --grid                            # every (bits, alpha) point, random payloads
 
-# 3) (optional) cloud-GPU alternative via Google Colab
+# 3) experiments: 6x3 matrix, robustness, figures/tables -> results/
+python scripts/run_experiments.py
+
+# 4) (optional) cloud-GPU alternative via Google Colab
 python scripts/build_colab_payload.py -o /tmp/deep_watermarking_colab.zip
 #    then run training/colab_windowed_cnn_training.ipynb in Colab
 ```
@@ -181,20 +194,87 @@ The training script auto-selects `cuda → mps → cpu` and writes real metrics 
 
 | Metric | Value | Source |
 |---|---|---|
-| Test bit accuracy | **0.7778** | `metrics.json` `test_bit_level.bit_accuracy` |
-| Test BER | **0.2222** | `metrics.json` `test_bit_level.ber` |
-| Test precision / recall / F1 | 0.7741 / 0.7437 / 0.7586 | `metrics.json` |
-| Best validation bit accuracy | **0.7842** (epoch 49) | `metrics.json` |
-| Exact registry-ID recovery | **96 / 100** | `metrics.json` `full_payload` |
-| Registry decodes passing the 0.78 threshold | **7 / 100** | `metrics.json` (i.e. most decodes fall just below the calibrated threshold) |
-| False-positive registrations on clean images | **0 / 100** | `metrics.json` `false_positives` |
-| Robustness — mean BER, PNG re-encode (n=8) | 0.205 | `metrics.json` `robustness` |
-| Robustness — mean BER, JPEG q90 (n=8) | 0.221 | `metrics.json` `robustness` |
-| Robustness — mean BER, gentle blur k3 (n=8) | **0.383** | `metrics.json` `robustness` |
+| Test bit accuracy | **0.7778** | `content/out/metrics.json` `test_bit_level.bit_accuracy` (registry payloads) |
+| Test BER | **0.2222** | `content/out/metrics.json` `test_bit_level.ber` |
+| Test precision / recall / F1 | 0.7741 / 0.7437 / 0.7586 | `content/out/metrics.json` |
+| Best validation bit accuracy | **0.7842** (epoch 49) | `content/out/metrics.json` |
+| Exact registry-ID recovery | **96 / 100** | `content/out/metrics.json` `full_payload` |
+| Registry decodes passing the 0.78 threshold | **7 / 100** | `content/out/metrics.json` (i.e. most decodes fall just below the calibrated threshold) |
+| False-positive registrations on clean images | **0 / 100** | `content/out/metrics.json` `false_positives` |
+| Robustness — mean BER, PNG re-encode (n=8) | 0.205 | `content/out/metrics.json` `robustness` (the copy under `models/…` recorded `skipped`) |
+| Robustness — mean BER, JPEG q90 (n=8) | 0.221 | `content/out/metrics.json` |
+| Robustness — mean BER, gentle blur k3 (n=8) | **0.383** | `content/out/metrics.json` |
 
-Full suite: **437 tests pass, 2 skipped** (the 2 skips are Phase 8 CNN tests awaiting its checkpoint).
+The rows above are the run packaged in `content/out/` (the shipped decoder). The copy under `models/experimental/windowed_cnn/metrics.json` is a second run with 0.7767 / 10 registered. Per-image `ber` values in older `metrics.json` files are wrong (a list-comparison bug, fixed 2026-09-18 in `training/colab_train_decoder.py`).
 
-Anything not listed above (e.g. known-class accuracy, other robustness transforms, throughput) is **not reported in the current implementation**.
+### Measured results — the (bits × α) grid and attacks (random payloads, 100 DIV2K-X4 test images)
+
+Experiment `matrix-20260918-025538-98a873`, 100 images, per-image random payloads; blind columns come only from the decoder trained for that exact (bits, α) — blank means none exists (256 bits overflow into HL, which the LL-only decoder cannot read). Accuracy in [0, 1].
+
+| Bits | α | PSNR (dB) | SSIM | Non-blind acc | **Blind acc** |
+|---|---|---|---|---|---|
+| 8 | 0.005 | 49.00 | 0.9986 | 0.9938 | **0.4788** |
+| 16 | 0.005 | 49.02 | 0.9985 | 0.9888 | **0.5700** |
+| 32 | 0.005 | 49.01 | 0.9985 | 0.9869 | **0.6031** |
+| 64 | 0.005 | 48.97 | 0.9985 | 0.9698 | **0.6445** |
+| 128 | 0.005 | 48.97 | 0.9985 | 0.8698 | **0.6199** |
+| 256 | 0.005 | 48.95 | 0.9985 | 0.8703 |  |
+| 8 | 0.010 | 45.70 | 0.9982 | 0.9962 | **0.5300** |
+| 16 | 0.010 | 45.65 | 0.9978 | 0.9950 | **0.6019** |
+| 32 | 0.010 | 45.60 | 0.9979 | 0.9819 | **0.6556** |
+| 64 | 0.010 | 45.56 | 0.9980 | 0.9639 | **0.7008** |
+| 128 | 0.010 | 45.58 | 0.9980 | 0.8791 | **0.6723** |
+| 256 | 0.010 | 45.54 | 0.9980 | 0.8719 |  |
+| 8 | 0.015 | 42.87 | 0.9977 | 0.9975 | **0.5537** |
+| 16 | 0.015 | 42.82 | 0.9971 | 0.9844 | **0.6431** |
+| 32 | 0.015 | 42.74 | 0.9972 | 0.9675 | **0.7109** |
+| 64 | 0.015 | 42.70 | 0.9973 | 0.9347 | **0.7448** |
+| 128 | 0.015 | 42.71 | 0.9974 | 0.8602 | **0.7091** |
+| 256 | 0.015 | 42.67 | 0.9972 | 0.8546 |  |
+| 8 | 0.020 | 40.67 | 0.9970 | 0.9925 | **0.6112** |
+| 16 | 0.020 | 40.60 | 0.9961 | 0.9719 | **0.6694** |
+| 32 | 0.020 | 40.52 | 0.9963 | 0.9437 | **0.7462** |
+| 64 | 0.020 | 40.50 | 0.9964 | 0.9000 | **0.7648** |
+| 128 | 0.020 | 40.50 | 0.9965 | 0.8324 | **0.7230** |
+| 256 | 0.020 | 40.46 | 0.9963 | 0.8255 |  |
+
+Robustness (`robustness-20260918-025634-2cf93d`, 100 images, 64-bit at α=0.015, decoder `models/windowed_cnn_grid/64bit_a0.015/windowed_cnn_best.pt`; geometric attacks not re-synchronised) — mean BER:
+
+| Attack | Severity | PSNR after attack | Blind BER | Non-blind BER |
+|---|---|---|---|---|
+| identity | — | ∞ | 0.254 | 0.067 |
+| jpeg_compress | {"quality": 95} | 36.2 | 0.261 | 0.080 |
+| jpeg_compress | {"quality": 90} | 34.3 | 0.275 | 0.102 |
+| jpeg_compress | {"quality": 75} | 31.4 | 0.322 | 0.178 |
+| jpeg_compress | {"quality": 50} | 29.4 | 0.364 | 0.249 |
+| jpeg_compress | {"quality": 30} | 28.0 | 0.398 | 0.302 |
+| gaussian_noise | {"sigma": 1} | 47.8 | 0.259 | 0.071 |
+| gaussian_noise | {"sigma": 2} | 42.1 | 0.262 | 0.089 |
+| gaussian_noise | {"sigma": 5} | 34.2 | 0.301 | 0.184 |
+| gaussian_noise | {"sigma": 10} | 28.3 | 0.358 | 0.308 |
+| salt_pepper | {"density": 0.001} | 34.9 | 0.339 | 0.236 |
+| salt_pepper | {"density": 0.005} | 27.8 | 0.404 | 0.367 |
+| salt_pepper | {"density": 0.01} | 24.9 | 0.424 | 0.405 |
+| salt_pepper | {"density": 0.05} | 17.8 | 0.475 | 0.487 |
+| gaussian_blur | {"ksize": 3} | 29.5 | 0.431 | 0.470 |
+| gaussian_blur | {"ksize": 5} | 26.9 | 0.457 | 0.477 |
+| median_filter | {"ksize": 3} | 28.7 | 0.450 | 0.450 |
+| median_filter | {"ksize": 5} | 24.8 | 0.480 | 0.471 |
+| resize_roundtrip | {"scale": 0.9} | 31.0 | 0.403 | 0.465 |
+| resize_roundtrip | {"scale": 0.75} | 29.6 | 0.417 | 0.470 |
+| resize_roundtrip | {"scale": 0.5} | 26.7 | 0.443 | 0.477 |
+| rotate | {"degrees": 1} | 20.9 | 0.484 | 0.463 |
+| rotate | {"degrees": 5} | 15.4 | 0.495 | 0.487 |
+| rotate | {"degrees": 45} | 11.3 | 0.494 | 0.505 |
+| center_crop | {"keep": 0.95} | 17.2 | 0.458 | 0.468 |
+| center_crop | {"keep": 0.9} | 14.2 | 0.480 | 0.484 |
+| center_crop | {"keep": 0.75} | 10.6 | 0.506 | 0.489 |
+
+Per-position blind accuracy (`results/per_bit/`, 64-bit, α=0.020): bits 0–7 **0.61**, 8–15 0.74, 16–31 0.79, 32–63 0.80 — the leading singular values are the hard part.
+
+Full data: `results/matrix/` (per-image CSV, summary JSON), `results/robustness/`, figures in `results/figures/`, per-position accuracy in `results/per_bit/`. Regenerate with `python scripts/run_experiments.py`.
+
+Full suite: **460 passed, 2 skipped** with DIV2K present (`pytest`, 2026-09-18); without the dataset 72 data-dependent tests skip. The 2 remaining skips are Phase 8 CNN tests awaiting a checkpoint.
 
 ### What the metrics mean
 
@@ -239,6 +319,7 @@ Open <http://127.0.0.1:8000/>.
 | POST | `/api/final-model/embed` | Final-model embed (registry-ID / message payloads) |
 | POST | `/api/final-model/extract/blind` | Blind extraction — watermarked image only |
 | POST | `/api/final-model/extract/nonblind` | Non-blind extraction — watermarked + original |
+| GET | `/api/results` | Measured results read from `results/` and the decoder's `metrics.json` (drives the UI's results section) |
 
 ### UI panels
 
@@ -291,8 +372,9 @@ training/      colab_train_decoder.py, colab_windowed_cnn_training.ipynb
 
 ## Honest limitations (read this first)
 
-- **Phase 8 CNN checkpoint is not shipped** — the default blind decoder reports `checkpoint_available=false`. Use `DECODER_MODE=windowed_cnn` for a blind extractor.
-- The **windowed CNN does not yet beat** the Phase 8 results it was meant to replace; it is experimental.
+- **Phase 8 CNN checkpoint is not shipped**; the windowed decoder is served automatically instead.
+- **The blind decoder cannot read the leading singular values.** Bits placed at singular-value indices 0–7 decode at ~0.5–0.6 accuracy at every α (`results/per_bit/`), because σ₀ ≫ σ₁ ≫ … leaves no smooth neighbourhood for the 15-value window. Short payloads (8/16 bits, which sit entirely in that region) are therefore *harder* for this decoder than 64-bit ones — the opposite of the paper draft's table. Moving short payloads deeper into the spectrum (`start_sv_index`) is a methodology change and has not been adopted.
+- **Bit 0 is a global brightness shift**: σ₀ carries the DC energy, so ±α on it changes mean luminance by ≈0.6 grey levels at α=0.015, and PSNR is essentially independent of payload length.
 - Registry decodes mostly sit **below** the calibrated 0.78 reliability threshold (7/100 pass it), and **registry-ID reliability is not a mathematical guarantee** — the threshold is calibrated, not proven. Before registering more than the current few messages, re-run `experiments/calibrate_registry_confidence.py` (see `docs/phase18_id_registry.md`).
 - **Robustness is weak** under blur (mean BER 0.383 for a single 3×3 blur) and only mild transforms were tested.
 - No ECC is applied in the final model (`src/watermark/ecc.py` is unused in it).
@@ -322,8 +404,20 @@ training/      colab_train_decoder.py, colab_windowed_cnn_training.ipynb
 uvicorn src.app.main:app --reload --port 8000        # run web app
 python scripts/ingest_div2k_stream.py                 # build processed DIV2K split
 python training/colab_train_decoder.py --project-root . --processed   # train + evaluate
-DECODER_MODE=windowed_cnn uvicorn src.app.main:app --port 8000        # serve windowed decoder
-pytest                                                 # 437 passed, 2 skipped
+DECODER_MODE=current uvicorn src.app.main:app --port 8000             # force the (absent) Phase 8 decoder
+pytest                                                 # 460 passed, 2 skipped (with DIV2K)
 ```
 
-See `docs/windowed_cnn.md`, `docs/phase18_id_registry.md`, and `docs/webapp.md` for deeper write-ups. All metrics in this README trace to `models/experimental/windowed_cnn/metrics.json` or the test suite.# Deep-watermarking
+## CLI
+
+```bash
+python scripts/embed.py --image input.jpg --watermark-length 64 --alpha 0.01     # -> input_wm.png + payload json
+python scripts/extract.py --image input_wm.png --payload input_wm.png.payload.json  # blind (original NOT used)
+python scripts/extract.py --image input_wm.png --payload ... --original input.jpg   # non-blind reference
+python scripts/train.py [--alpha 0.01 --bit-length 32 --payload-mode random] | --grid
+python scripts/run_experiments.py [--quick]                                         # matrix + robustness + figures
+python scripts/check_e2e.py                                                         # every length x alpha through files + API
+python experiments/per_bit_accuracy.py --bits 64 --alpha 0.015                      # accuracy per singular-value index
+```
+
+See `docs/windowed_cnn.md`, `docs/phase18_id_registry.md`, `docs/webapp.md` and `docs/AUDIT_2026-09-18.md` for deeper write-ups.

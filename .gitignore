@@ -12,8 +12,27 @@ data/processed/**
 data/generated/**
 data/external/**
 !data/**/.gitkeep
+# checkpoints are never committed (the windowed decoder ships as
+# content/out/windowed_cnn_model_package.zip); their metrics/config are.
 models/**
+!models/windowed_cnn_grid/
+!models/windowed_cnn_grid/index.json
+!models/windowed_cnn_grid/*/
+!models/windowed_cnn_grid/*/metrics.json
+!models/windowed_cnn_grid/*/training_config.json
+!models/windowed_cnn_grid/*/training_history.csv
+# each grid point's decoder ships as a ~0.5 MB package (unpacked on first use)
+!models/windowed_cnn_grid/*/windowed_cnn_model_package.zip
+# experiment outputs: tables, summaries and figures are committed, sample
+# images are not.
 results/**
+!results/**/
+!results/**/*.csv
+!results/**/*.json
+!results/**/*.md
+!results/figures/*.png
+results/**/samples/
+content/windows_grid/
 mlruns/
 artifacts/
 *.pt

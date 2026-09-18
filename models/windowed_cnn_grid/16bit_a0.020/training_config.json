@@ -1,0 +1,31 @@
+{
+  "epochs": 50,
+  "batch_size": 64,
+  "lr": 0.001,
+  "patience": 10,
+  "seed": 20260906,
+  "device": "mps",
+  "bit_length": 16,
+  "window_size": 15,
+  "image_size": 256,
+  "alpha": 0.02,
+  "model": "WindowedCNNExtractor (Conv1d 32/64, k=3, flatten, Dense 64, Dense 1)",
+  "split_mode": "700",
+  "best_epoch": 4,
+  "best_val_bit_acc": 0.67625,
+  "final_row": {
+    "epoch": 14,
+    "train_loss": 0.587276,
+    "train_bit_acc": 0.667433,
+    "val_loss": 0.583415,
+    "val_bit_accuracy": 0.671875,
+    "val_ber": 0.328125,
+    "val_tn": 477,
+    "val_fp": 318,
+    "val_fn": 207,
+    "val_tp": 598,
+    "val_precision": 0.652838,
+    "val_recall": 0.742857,
+    "val_f1": 0.694945
+  }
+}
